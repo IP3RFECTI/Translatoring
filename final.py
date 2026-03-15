@@ -13,7 +13,12 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
 
-TOKEN = "yandex token here"
+import warnings
+
+warnings.filterwarnings("ignore")
+
+TOKEN = "" # Введите свой яндекс токен
+
 OUTPUT_DIR = "segments"
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 
@@ -71,39 +76,67 @@ def get_text(url):
 
 # ---------- узнать количество сегментов ----------
 def get_total_segments(master_url):
+    try:
 
-    print("\nПроверяем количество сегментов через master.m3u8")
+        print("\nПроверяем количество сегментов через master.m3u8")
 
-    master = get_text(master_url)
+        master = get_text(master_url)
 
-    playlist_url = None
+        playlist_url = None
 
-    for line in master.split("\n"):
-        if line.endswith(".m3u8"):
-            playlist_url = urljoin(master_url, line)
+        for line in master.split("\n"):
+            if line.endswith(".m3u8"):
+                playlist_url = urljoin(master_url, line)
 
-    print("Playlist:", playlist_url)
+        print("Playlist:", playlist_url)
 
-    playlist = get_text(playlist_url)
+        playlist = get_text(playlist_url)
 
-    segments = []
+        segments = []
 
-    for line in playlist.split("\n"):
-        if line.endswith(".ts"):
-            segments.append(urljoin(playlist_url, line))
+        for line in playlist.split("\n"):
+            if line.endswith(".ts"):
+                segments.append(urljoin(playlist_url, line))
 
-    print("Segments:", len(segments))
+        print("Segments:", len(segments))
 
-    return len(segments)
+        return len(segments)
+    except:
+        print("\nПроверяем количество сегментов")
 
+        master = get_text(master_url)
 
-# ---------- сбор ts ----------
+        playlist_url = None
+
+        # ищем playlist
+        for line in master.splitlines():
+            if ".m3u8" in line and not line.startswith("#"):
+                playlist_url = urljoin(master_url, line)
+
+        print("Playlist:", playlist_url)
+
+        playlist = get_text(playlist_url)
+
+        segments = []
+
+        for line in playlist.splitlines():
+
+            if line.endswith(".ts"):
+                segments.append(urljoin(playlist_url, line))
+
+        print("Segments:", len(segments))
+
+        return segments
+    finally: print(f'Сегменты: {segments}. Если тут ничего нет, то значит ниче не нашлось.')
+
 def collect_ts_urls(driver):
 
     print("\nСобираем ts сегменты...")
 
     urls = set()
-    master_m3u8 = None
+    segment_numbers = set()
+
+    playlist_m3u8 = None
     total_segments = None
 
     start = time.time()
@@ -126,28 +159,62 @@ def collect_ts_urls(driver):
 
                 url = message["params"]["response"]["url"]
 
-                if ".m3u8" in url and "master" in url and not master_m3u8:
+                # ---- ловим m3u8 ----
+                if ".m3u8" in url and not playlist_m3u8:
 
-                    master_m3u8 = url
+                    playlist_m3u8 = url
 
-                    print("\nНайден master m3u8:")
-                    print(master_m3u8)
+                    print("\nНайден m3u8:")
+                    print(playlist_m3u8)
 
-                    total_segments = get_total_segments(master_m3u8)
+                    try:
+                        total_segments = get_total_segments(playlist_m3u8)
+                        print("Segments:", total_segments)
+                    except:
+                        total_segments = None
 
+                # ---- ts сегменты ----
                 if ".ts" in url:
+
+                    num_match = re.search(r'-(\d+)\.ts', url)
+
+                    if not num_match:
+                        continue
+
+                    num = int(num_match.group(1))
 
                     if url not in urls:
                         urls.add(url)
-                        print("Segment:", len(urls))
+                        segment_numbers.add(num)
 
-        if total_segments and len(urls) >= total_segments:
+                        print("Segment:", num)
 
-            print("\nВсе сегменты найдены")
+        # ---- проверяем что есть все номера ----
+        if total_segments:
+
+            missing = [
+                i for i in range(1, total_segments + 1)
+                if i not in segment_numbers
+            ]
+
+            if not missing:
+
+                print("\nВсе сегменты найдены")
+                return sorted(list(urls))
+
+        # ---- fallback если m3u8 не нашли ----
+        if not total_segments and len(segment_numbers) > 50:
+
+            print("\nПлейлист не найден, возвращаем сегменты")
             return sorted(list(urls))
 
         if time.time() - start > 600:
+
             print("\nТаймаут ожидания")
+
+            if total_segments:
+                print("Отсутствуют сегменты:", missing)
+
             break
 
         time.sleep(1)
@@ -156,44 +223,78 @@ def collect_ts_urls(driver):
 
 
 # ---------- выбрать лучшее качество ----------
+import re
+from collections import defaultdict
+
 def select_best_segments(urls):
 
     print("\nВыбираем лучшее качество сегментов...")
 
-    best = {}
+    QUALITY_MAP = {
+        60861: 270,
+        101054: 406,
+        213571: 720,
+        360215: 1080
+    }
+
+    segments_by_quality = defaultdict(dict)
 
     for url in urls:
 
-        num_match = re.search(r'_(\d+)\.ts', url)
+        # номер сегмента
+        num_match = re.search(r'-(\d+)\.ts', url)
         if not num_match:
             continue
 
         num = int(num_match.group(1))
 
-        q_match = re.search(r'/video/(\d+)/', url)
-        quality = int(q_match.group(1)) if q_match else 0
+        # определяем качество
+        quality = 0
 
-        if num not in best:
-            best[num] = (quality, url)
+        sym_match = re.search(r'SYM1lOWb=(\d+)', url)
+        if sym_match:
+            sym_id = int(sym_match.group(1))
+            quality = QUALITY_MAP.get(sym_id, 0)
+
+        if quality:
+            segments_by_quality[quality][num] = url
+
+    if not segments_by_quality:
+        print("⚠ Не удалось определить качество")
+        return sorted(urls)
+
+    # сортируем качества по убыванию
+    qualities = sorted(segments_by_quality.keys(), reverse=True)
+
+    print("Доступные качества:", qualities)
+
+    # сколько всего сегментов
+    max_segments = max(
+        max(q.keys()) for q in segments_by_quality.values()
+    )
+
+    result = []
+
+    for i in range(1, max_segments + 1):
+
+        chosen = None
+        chosen_q = None
+
+        # ищем сегмент начиная с лучшего качества
+        for q in qualities:
+
+            if i in segments_by_quality[q]:
+                chosen = segments_by_quality[q][i]
+                chosen_q = q
+                break
+
+        if chosen:
+            result.append(chosen)
+            print(f"Segment {i} -> {chosen_q}p")
         else:
-            if quality > best[num][0]:
-                best[num] = (quality, url)
+            print(f"⚠ Segment {i} missing completely")
 
-    expected = max(best.keys())
-
-    missing = [i for i in range(1, expected + 1) if i not in best]
-
-    if missing:
-        print("⚠ Пропущенные сегменты:", missing)
-
-    ordered = [best[i][1] for i in sorted(best.keys())]
-
-    print("\nВыбранные сегменты:")
-    for i in sorted(best.keys()):
-        print(f"Segment {i} -> {best[i][0]}p")
-
-    return ordered
-
+    return result
 
 # ---------- ожидание ----------
 def wait_for_video_buffer():
@@ -225,13 +326,19 @@ def create_list_file():
 
     files = [f for f in os.listdir(OUTPUT_DIR) if f.endswith(".ts")]
 
-    files.sort()
+    # функция извлечения номера сегмента
+    def segment_number(name):
+        match = re.search(r'-(\d+)\.ts$', name)
+        return int(match.group(1)) if match else -1
+
+    # сортировка по номеру сегмента
+    files.sort(key=segment_number)
 
     with open("list.txt", "w", encoding="utf-8") as f:
 
         for file in files:
 
-            path = os.path.join(OUTPUT_DIR, file)
+            path = os.path.join(OUTPUT_DIR, file).replace("\\", "/")
 
             f.write(f"file '{path}'\n")
 
@@ -271,9 +378,14 @@ def main():
 
     driver.switch_to.new_window("tab")
 
+
     driver.get(
-        "https://learn.deeplearning.ai/courses/build-with-andrew/lesson/a45t1o/creating-an-app-with-ai"
+        'https://anthropic.skilljar.com/'
     )
+
+    # driver.get(
+    #     "https://learn.deeplearning.ai/courses/build-with-andrew/lesson/a45t1o/creating-an-app-with-ai"
+    # )
 
     print("\nВключи VPN если нужно.")
 
@@ -293,13 +405,12 @@ def main():
 
     print("Папка segments удалена")
 
-    driver.quit()
+    driver.close()
 
 
 # =====================================================
 # ВТОРОЙ СКРИПТ (ПЕРЕВОД)
 # =====================================================
-
 
 
 LOCAL_FILE = "video_1.mp4"
@@ -438,23 +549,49 @@ def cleanup_files():
             os.remove(file)
             print(f"Удален файл: {file}")
 
+def delete_file():
+
+    headers = {"Authorization": f"OAuth {TOKEN}"}
+
+    print("Deleting file from Yandex Disk...")
+
+    r = requests.delete(
+        f"{BASE_URL}/resources",
+        headers=headers,
+        params={
+            "path": DISK_FILE,
+            "permanently": "true"
+        }
+    )
+
+    r.raise_for_status()
+
+    print("✅ File deleted from Yandex Disk")
+
 def translation_pipeline():
+    try:
+        upload_file()
 
-    upload_file()
+        publish_file()
 
-    publish_file()
+        time.sleep(5)
 
-    time.sleep(5)
+        public_url = get_public_url()
 
-    public_url = get_public_url()
+        audio_url = run_vot(public_url)
 
-    audio_url = run_vot(public_url)
+        download_audio(audio_url)
 
-    download_audio(audio_url)
+        replace_audio()
 
-    replace_audio()
+        print("\n🎉 DONE")
+    finally:
+        try:
+            delete_file()
+        except:
+            pass
 
-    print("\n🎉 DONE")
+        cleanup_files()
 
 
 # =====================================================
