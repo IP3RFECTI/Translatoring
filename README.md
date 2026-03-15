@@ -9,3 +9,17 @@
 8. Прогрузить видео целиком
 9. Ожидать перевода
 10. В конце получится mp4 файл с переводом. Время полного цикла программы около 3 минут
+
+Список необходимых библиотек:
+selenium
+webdriver-manager
+requests
+os
+json
+time
+subprocess
+shutil
+re
+urllib.parse
+ffmpeg (Скачать можно FFmpeg через choco)
+vot-cli (pip install vot-cli)
