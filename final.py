@@ -17,7 +17,7 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-TOKEN = "" #Введите свой яндекс токен
+TOKEN = "" # Введите свой яндекс токен
 
 OUTPUT_DIR = "segments"
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
@@ -230,62 +230,60 @@ def select_best_segments(urls):
 
     print("\nВыбираем лучшее качество сегментов...")
 
-    QUALITY_MAP = {
-        60861: 270,
-        101054: 406,
-        213571: 720,
-        360215: 1080
-    }
-
     segments_by_quality = defaultdict(dict)
+    all_sym_ids = set()
 
+    # 1. Собираем сегменты и все уникальные quality-id
     for url in urls:
 
-        # номер сегмента
         num_match = re.search(r'-(\d+)\.ts', url)
         if not num_match:
             continue
 
         num = int(num_match.group(1))
 
-        # определяем качество
-        quality = 0
-
         sym_match = re.search(r'SYM1lOWb=(\d+)', url)
-        if sym_match:
-            sym_id = int(sym_match.group(1))
-            quality = QUALITY_MAP.get(sym_id, 0)
+        if not sym_match:
+            continue
 
-        if quality:
-            segments_by_quality[quality][num] = url
+        sym_id = int(sym_match.group(1))
+        all_sym_ids.add(sym_id)
+
+        segments_by_quality[sym_id][num] = url
 
     if not segments_by_quality:
         print("⚠ Не удалось определить качество")
         return sorted(urls)
 
-    # сортируем качества по убыванию
-    qualities = sorted(segments_by_quality.keys(), reverse=True)
+    # 2. Сортируем качества по убыванию (чем больше — тем лучше)
+    sorted_sym_ids = sorted(all_sym_ids, reverse=True)
 
-    print("Доступные качества:", qualities)
+    # 3. Назначаем им "человеческие" качества
+    quality_labels = [1080, 720, 480, 240]
+    quality_map_dynamic = {
+        sym_id: quality_labels[i] if i < len(quality_labels) else 0
+        for i, sym_id in enumerate(sorted_sym_ids)
+    }
 
-    # сколько всего сегментов
+    print("Определённые качества:", quality_map_dynamic)
+
+    # 4. Сколько максимум сегментов
     max_segments = max(
         max(q.keys()) for q in segments_by_quality.values()
     )
 
     result = []
 
+    # 5. Выбираем лучший сегмент для каждого номера
     for i in range(1, max_segments + 1):
 
         chosen = None
         chosen_q = None
 
-        # ищем сегмент начиная с лучшего качества
-        for q in qualities:
-
-            if i in segments_by_quality[q]:
-                chosen = segments_by_quality[q][i]
-                chosen_q = q
+        for sym_id in sorted_sym_ids:
+            if i in segments_by_quality[sym_id]:
+                chosen = segments_by_quality[sym_id][i]
+                chosen_q = quality_map_dynamic[sym_id]
                 break
 
         if chosen:
@@ -366,21 +364,12 @@ def merge_video():
 
 
 # ---------- основной скрипт скачивания ----------
-def main():
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    driver = setup_browser()
-
-    driver.get(
-        "https://chromewebstore.google.com/detail/%D0%B1%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9-vpn-proxy-vpnl/lneaocagcijjdpkcabeanfpdbmapcjjg?hl=ru"
-    )
+def main(driver, my_url):
 
     driver.switch_to.new_window("tab")
 
-
     driver.get(
-        'https://anthropic.skilljar.com/'
+        f'{my_url}'
     )
 
     # driver.get(
@@ -404,8 +393,6 @@ def main():
     shutil.rmtree(OUTPUT_DIR, ignore_errors=True)
 
     print("Папка segments удалена")
-
-    driver.close()
 
 
 # =====================================================
@@ -520,7 +507,7 @@ def download_audio(audio_url):
     print("✅ Audio downloaded")
 
 
-def replace_audio():
+def replace_audio(output_name):
 
     print("Replacing audio track...")
 
@@ -532,10 +519,10 @@ def replace_audio():
         "-c:v", "copy",
         "-map", "0:v:0",
         "-map", "1:a:0",
-        OUTPUT_VIDEO
+        output_name
     ], check=True)
 
-    print("✅ New video created:", OUTPUT_VIDEO)
+    print("✅ New video created:", output_name)
 
 def cleanup_files():
 
@@ -569,6 +556,9 @@ def delete_file():
     print("✅ File deleted from Yandex Disk")
 
 def translation_pipeline():
+
+    output_name = get_next_output_name()
+
     try:
         upload_file()
 
@@ -582,7 +572,7 @@ def translation_pipeline():
 
         download_audio(audio_url)
 
-        replace_audio()
+        replace_audio(output_name)
 
         print("\n🎉 DONE")
     finally:
@@ -593,15 +583,129 @@ def translation_pipeline():
 
         cleanup_files()
 
+def get_next_output_name():
+
+    i = 1
+
+    while True:
+
+        name = f"video_{i}_translated.mp4"
+
+        if not os.path.exists(name):
+            return name
+
+        i += 1
+
+def run_single_page(driver):
+
+    print("\n=== СКАЧИВАНИЕ ОДНОЙ СТРАНИЦЫ ===\n")
+
+    my_url = input("Вставь ссылку на страницу с видео:\n> ")
+
+    main(driver, my_url)
+
+    translation_pipeline()
+
+
+def run_list_pages():
+
+    print("\n=== СКАЧИВАНИЕ НЕСКОЛЬКИХ СТРАНИЦ ===\n")
+
+    my_urls = input("Вставь ссылки с видео (каждая с новой строки или через пробел):\n> ")
+
+    # разбиваем строку на список ссылок
+    urls = [url.strip() for url in my_urls.replace(",", " ").split() if url.strip()]
+
+    if not urls:
+        print("❌ Ссылки не найдены")
+        return
+
+    print(f"\nНайдено ссылок: {len(urls)}\n")
+
+    for i, url in enumerate(urls, 1):
+        print(f"\n===== Видео {i}/{len(urls)} =====")
+        print(url)
+
+        main(driver, url)
+        translation_pipeline()
+
+
+def run_playlist():
+    """
+    Пункт 3:
+    AI агент или парсер курса
+    (пока не реализован)
+    """
+
+    print("\nФункция пока не реализована\n")
+
+
+# =====================================================
+# КОНСОЛЬНОЕ МЕНЮ
+# =====================================================
+def config():
+    print("\n==============================")
+    print(" CONFIGURATION... ")
+    print("==============================\n")
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    driver = setup_browser()
+
+    driver.get(
+        "https://chromewebstore.google.com/detail/%D0%B1%D0%B5%D1%81%D0%BF%D0%BB%D0%B0%D1%82%D0%BD%D1%8B%D0%B9-vpn-proxy-vpnl/lneaocagcijjdpkcabeanfpdbmapcjjg?hl=ru"
+    )
+
+    driver.switch_to.new_window("tab")
+
+    driver.get(
+        'https://anthropic.skilljar.com/'
+    )
+
+    input("ВКЛЮЧИТЕ ВПН И АВТОРИЗИРУЙТЕСЬ НА НУЖНОМ ВАМ САЙТЕ. ENTER для продолжения")
+
+    return driver
+
+def console_app(driver):
+
+    while True:
+
+        print("\n==============================")
+        print(" VIDEO DOWNLOADER ")
+        print("==============================\n")
+
+        print("1. Скачать видео с одной страницы")
+        print("2. Скачать список страниц")
+        print("3. Скачать курс целиком")
+        print("4. Выход\n")
+
+        choice = input("Выбери пункт: ")
+
+        if choice == "1":
+            run_single_page(driver)
+
+        elif choice == "2":
+            run_list_pages()
+
+        elif choice == "3":
+            run_playlist()
+
+        elif choice == "4":
+
+            print("\nВыход.")
+
+            break
+
+        else:
+
+            print("\nНеверный пункт\n")
+
 
 # =====================================================
 # ЗАПУСК
 # =====================================================
 
 if __name__ == "__main__":
+    driver = config()
+    console_app(driver)
 
-    main()
-
-    translation_pipeline()
-
-    cleanup_files()
