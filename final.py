@@ -17,7 +17,7 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-TOKEN = "" # Введите свой яндекс токен
+# TOKEN = "" # Введите свой яндекс токен
 
 OUTPUT_DIR = "segments"
 CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
